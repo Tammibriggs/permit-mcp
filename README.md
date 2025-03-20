@@ -1,15 +1,25 @@
 # Permit.io MCP Server
-A Model Context Protocol (MCP) server for Permit access request operation approval management.
+A Model Context Protocol (MCP) server for Permit.io access request and operation approval creation and management.
 
 ## Features 
-- Create an access request
-- List access requests
-- Approve access request
-- Deny access request
-- Create operation approval request
-- List operation approval requests
-- Approve operation approval request 
-- Deny operation approval request
+- Create an access and operation approval request.
+- List access and operation approval requests.
+- Approve access and operation approval request.
+- Deny access and operation approval request.
+- List resources and resources intances.
+- Validate the existence of a resource.
+
+## What Can You Do with It?
+When connected to an AI chatbot like Claude or a custom MCP client, you can fire off queries like these to create and manage access in a tenant.
+
+- `My user id is dev, create an operation approval request for deploying to 'production' resource with reason 'scheduled maintenance update'`
+- **Approving Requests (Two-Step Process):**
+  1. `My user id is admin, list pending access requests for the 'database' resource`
+  2. `Approve access request 'req_123' with comment 'credentials verified'`
+- **Denying Requests (Two-Step Process):**
+  1. `My user id is security, list all access requests for the 'firewall' resource`
+  2. `Deny access request 'req_456' with comment 'needs additional clearance'`
+
 
 ## Installation
 ```shell

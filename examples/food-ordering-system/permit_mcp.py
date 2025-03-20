@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Union
 import httpx
 import json
 import os
@@ -48,12 +48,104 @@ class PermitServer:
         setattr(self, tool_name, func)
 
     def register_tools(self):
-        async def create_access_request(user_id: str, resource: str, resource_instance: Optional[str], role: str, reason: str) -> str:
+
+        async def list_resources(page: int = 1, per_page: int = 100):
+            """
+                List available resources. 
+
+                Args:
+                    page: Optional page number of the results to fetch, starting at page 1.
+                    per_page: Optional number of results per page (maximum of 100).
+            """
+            try:
+                resources = await self.permit.api.resources.list(page, per_page)
+                updated_data = [
+                    {
+                        "key": resource.key,
+                        "name": resource.name,
+                        "description": resource.description,
+                        "created_at": resource.created_at,
+                    }
+                    for resource in resources
+                ]
+                return updated_data
+            except Exception as e:
+                raise ToolError(e)
+
+        self._register_tool("list_resources", list_resources)
+
+        async def validate_resource(resource_key: str) -> bool:
+            """
+            Validate that a resource exists before attempting operations on it.
+
+            Use this tool first when handling queries about specific resources
+            to ensure they exist and are properly referenced.
+
+            Args:
+                resource_key: The resource key to validate
+
+            Returns:
+                bool: True if resource exists, False otherwise
+            """
+            resources = await list_resources()
+            return any(r["key"] == resource_key for r in resources)
+
+        self._register_tool("validate_resource", validate_resource)
+
+        async def list_resources_instances(resource: Optional[str], page: int = 1, per_page: int = 100):
+            """
+                Lists the available resource instances along with their ID and key.
+
+                This function fetches resource instances and returns their details. If no instances exist, 
+                an incorrect resource is supplied, or there are no more results due to pagination, 
+                an empty list is returned.
+
+                Args:
+                    resource: Optional resource key or id to filter by.
+                    page: Optional page number of the results to fetch, starting at page 1.
+                    per_page: Optional number of results per page (maximum of 100).
+            """
+
+            url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/resource_instances"
+
+            params = {k: v for k, v in {
+                "tenant": TENANT,
+                "resource": resource,
+                "page": page,
+                "per_page": per_page,
+            }.items() if v is not None}
+
+            headers = {"authorization": f"Bearer {PERMIT_API_KEY}",
+                       "Content-Type": "application/json"}
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params=params)
+                if 200 <= response.status_code < 300:
+                    resources_instances = response.json()
+                    updated_data = [
+                        {
+                            "key": item['key'],
+                            "id": item['id'],
+                            "resource": item['resource'],
+                            "created_at": item['created_at'],
+                        }
+                        for item in resources_instances
+                    ]
+                    return updated_data
+
+                else:
+                    raise ToolError(
+                        f"Request failed with status code {response.status_code}: {response.text}")
+
+        self._register_tool("list_resources_instances",
+                            list_resources_instances)
+
+        async def create_access_request(user_id: str, resource: str, resource_instance: Optional[Union[str, int]], role: str, reason: str) -> str:
             """
             Create a new access request.
 
             Args:
-                user_id: Either the unique id of the user, or the URL-friendly key of the user requesting access.
+                user_id: The ID or URL-friendly key of the user requesting access.
                 resource: Resource id or key that the user is requesting access to.
                 resource_instance: The id or key of the specific resource instance that the user is requesting access (optional).
                 role: Role id or key that the user is requesting access to (e.g 'editor').
@@ -87,7 +179,7 @@ class PermitServer:
             resource: str,
             status: Optional[str] = None,
             role: Optional[str] = None,
-            resource_instance: Optional[str] = None,
+            resource_instance: Optional[Union[str, int]] = None,
             page: Optional[int] = 1,
             per_page: Optional[int] = 30,
         ) -> List[Dict]:
@@ -95,11 +187,11 @@ class PermitServer:
             List access requests.
 
             Args:
-                user_id: The ID or URL-friendly key of the user requesting the list.
+                user_id: The ID or URL-friendly key of the user requesting to view the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
                 resource: Resource id or key that the user whats to list it's access requests.
                 role: Optional filter by role.
-                resource_instance: Optional filter by resource instance key or ID.
+                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -121,7 +213,8 @@ class PermitServer:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, headers=headers, params=params)
                 if 200 <= response.status_code < 300:
-                    return response.json().get("data", [])
+                    access_requests = response.json().get("data", [])
+                    return access_requests
                 else:
                     raise ToolError(
                         f"Request failed with status code {response.status_code}: {response.text}")
@@ -134,7 +227,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user approving the request.
-                access_request_id: The ID of the access request to approve.
+                access_request_id: The ID of the access request to approve, which can be obtained by first listing access requests.
                 reviewer_comment: Optinoal comment from the reviewer.
             """
             url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/access_requests/{ACCESS_ELEMENTS_CONFIG_ID}/user/{user_id}/tenant/{TENANT}/{access_request_id}/approve"
@@ -164,7 +257,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user denying the request.
-                access_request_id: The ID or URL-friendly key of the access request to deny.
+                access_request_id: The ID or URL-friendly key of the access request to deny, which can be obtained by first listing access requests.
                 reviewer_comment: Optional comment from the reviewer.
             """
             url = f"https://api.permit.io/v2/facts/{PROJECT_ID}/{ENV_ID}/access_requests/{ACCESS_ELEMENTS_CONFIG_ID}/user/{user_id}/tenant/{TENANT}/{access_request_id}/deny"
@@ -188,7 +281,7 @@ class PermitServer:
         self._register_tool("deny_access_request", deny_access_request)
 
         # Operation Approval Tools
-        async def create_operation_approval(user_id: str, resource: str, reason: str, resource_instance: Optional[str] = None) -> str:
+        async def create_operation_approval(user_id: str, resource: str, reason: str, resource_instance: Optional[Union[str, int]] = None) -> str:
             """
             Create a new operation approval request.
 
@@ -232,7 +325,7 @@ class PermitServer:
             user_id: str,
             resource: str,
             status: Optional[str] = None,
-            resource_instance: Optional[str] = None,
+            resource_instance: Optional[Union[str, int]] = None,
             page: Optional[int] = 1,
             per_page: Optional[int] = 30,
         ) -> List[Dict]:
@@ -243,7 +336,7 @@ class PermitServer:
                 user_id: The ID or URL-friendly key of the user requesting the list.
                 status: Optional filter by status (e.g., "pending", "approved", "denied", "canceled").
                 resource: Resource id or key that the user whats to list it's operation approval requests.
-                resource_instance: Optional filter by resource instance key or ID.
+                resource_instance: Filter by resource instance key or ID. This parameter may be required or optional depending on the usecase.
                 page: Page number of the results to fetch (default: 1).
                 per_page: The number of results per page (max 100, default: 30).
             """
@@ -272,7 +365,8 @@ class PermitServer:
                 if response.status_code >= 200 and response.status_code < 300:
                     string_data = response.content.decode('utf-8')
                     data = json.loads(string_data)
-                    return data.get("data", [])
+                    operation_approvals = data.get("data", [])
+                    return operation_approvals
                 else:
                     raise ToolError(
                         f"Request failed with status code {response.status_code}: {response.text}")
@@ -286,7 +380,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user approving the request.
-                operation_approval_id: The ID or URL-friendly key the operation approval.
+                operation_approval_id: The ID or URL-friendly key of the operation approval, which can be obtained by first listing operation approvals.
                 reviewer_comment: Optional comment from the reviewer.
             """
             login = await self.permit.elements.login_as(user_id, TENANT)
@@ -317,7 +411,7 @@ class PermitServer:
 
             Args:
                 user_id: The ID or URL-friendly key of the user denying the request.
-                operation_approval_id: The ID or URL-friendly key of the operation approval.
+                operation_approval_id: The ID or URL-friendly key of the operation approval to deny, which can be obtained by first listing operation approvals.
                 reviewer_comment: Optional comment from the reviewer.
             """
             login = await self.permit.elements.login_as(user_id, TENANT)
